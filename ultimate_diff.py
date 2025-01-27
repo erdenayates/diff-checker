@@ -1,14 +1,9 @@
 import tkinter as tk
-from tkinter import ttk, scrolledtext, filedialog, messagebox, font
+from tkinter import ttk, scrolledtext, filedialog, messagebox
 import difflib
 import json
-import re
 import threading
 from datetime import datetime
-from tkinter.colorchooser import askcolor
-import pygments
-from pygments.lexers import get_lexer_for_filename
-from pygments.formatters import HtmlFormatter
 
 class UltimateDiffChecker:
     def __init__(self, root):
@@ -60,11 +55,9 @@ class UltimateDiffChecker:
         # View menu
         view_menu = tk.Menu(menu_bar, tearoff=0)
         view_menu.add_checkbutton(label="Dark Mode", command=self.toggle_theme)
-        view_menu.add_command(label="Customize Colors", command=self.customize_colors)
         
         # Help menu
         help_menu = tk.Menu(menu_bar, tearoff=0)
-        help_menu.add_command(label="Shortcuts", command=self.show_shortcuts)
         help_menu.add_command(label="About", command=self.show_about)
         
         menu_bar.add_cascade(label="File", menu=file_menu)
@@ -96,14 +89,6 @@ class UltimateDiffChecker:
         # Status bar
         self.status_bar = ttk.Label(main_frame, text="Ready", anchor=tk.W)
         self.status_bar.pack(fill=tk.X, padx=5, pady=2)
-        
-        # Search bar
-        self.search_bar = ttk.Frame(main_frame)
-        ttk.Label(self.search_bar, text="Search:").pack(side=tk.LEFT)
-        self.search_entry = ttk.Entry(self.search_bar, width=30)
-        self.search_entry.pack(side=tk.LEFT, padx=5)
-        ttk.Button(self.search_bar, text="🔍", command=self.highlight_search).pack(side=tk.LEFT)
-        ttk.Button(self.search_bar, text="❌", command=self.clear_search).pack(side=tk.LEFT)
 
     def create_editor_panel(self, title, side):
         frame = ttk.Frame(self.panes)
@@ -115,60 +100,119 @@ class UltimateDiffChecker:
         ttk.Button(header, text="📁", command=lambda: self.open_file(side)).pack(side=tk.RIGHT)
         ttk.Button(header, text="×", command=lambda: self.clear_panel(side)).pack(side=tk.RIGHT)
         
-        # Text area with line numbers
-        text_frame = ttk.Frame(frame)
-        text_frame.pack(fill=tk.BOTH, expand=True)
-        
-        self.line_numbers = tk.Canvas(text_frame, width=40, bg=self.config['colors']['context'])
-        self.line_numbers.pack(side=tk.LEFT, fill=tk.Y)
-        
+        # Text area
         text_widget = scrolledtext.ScrolledText(
-            text_frame, wrap=tk.NONE, font=('Consolas', 10),
+            frame, wrap=tk.NONE, font=('Consolas', 10),
             undo=True, maxundo=100
         )
         text_widget.pack(fill=tk.BOTH, expand=True)
         text_widget.bind('<KeyRelease>', self.mark_text_changed)
-        text_widget.bind('<MouseWheel>', self.sync_scroll)
-        text_widget.bind('<Configure>', lambda e: self.update_line_numbers(side))
         
         setattr(self, f'{side}_text', text_widget)
         return frame
 
     def create_diff_panel(self):
-        # Diff view tabs
-        self.notebook = ttk.Notebook(self.diff_frame)
-        self.notebook.pack(fill=tk.BOTH, expand=True)
-        
-        # Unified diff tab
-        unified_frame = ttk.Frame(self.notebook)
         self.unified_diff = scrolledtext.ScrolledText(
-            unified_frame, wrap=tk.NONE, font=('Consolas', 10)
+            self.diff_frame, wrap=tk.NONE, font=('Consolas', 10)
         )
         self.unified_diff.pack(fill=tk.BOTH, expand=True)
-        self.notebook.add(unified_frame, text="Unified Diff")
-        
-        # Side-by-side diff tab
-        side_frame = ttk.Frame(self.notebook)
-        self.side_diff = tk.Canvas(side_frame, bg='white')
-        self.side_diff.pack(fill=tk.BOTH, expand=True)
-        self.notebook.add(side_frame, text="Side-by-Side")
-        
-        # Configure tags
         self.setup_tags()
 
     def setup_tags(self):
         tags = {
             'add': {'background': self.config['colors']['add']},
             'remove': {'background': self.config['colors']['remove']},
-            'header': {'background': self.config['colors']['header']},
-            'search': {'background': 'yellow', 'foreground': 'black'}
+            'header': {'background': self.config['colors']['header']}
         }
         for tag, style in tags.items():
             self.unified_diff.tag_config(tag, **style)
 
-    # (Continued with remaining methods for comparison, theming, search, etc...)
-    # [Note: Actual implementation would include all the remaining methods]
-    
+    def start_comparison_thread(self):
+        self.compare_active = True
+        threading.Thread(target=self.compare_thread, daemon=True).start()
+
+    def compare_thread(self):
+        while self.compare_active:
+            if self.text_change_flag:
+                self.compare_texts()
+                self.text_change_flag = False
+            self.root.update_idletasks()
+
+    def mark_text_changed(self, event=None):
+        self.text_change_flag = True
+
+    def compare_texts(self):
+        text1 = self.original_text.get('1.0', tk.END).splitlines()
+        text2 = self.modified_text.get('1.0', tk.END).splitlines()
+        
+        diff = difflib.unified_diff(
+            text1, text2,
+            fromfile='Original',
+            tofile='Modified',
+            n=9999
+        )
+        
+        self.unified_diff.delete('1.0', tk.END)
+        for line in diff:
+            self.insert_diff_line(line)
+
+    def insert_diff_line(self, line):
+        if line.startswith('+'):
+            tag = 'add'
+        elif line.startswith('-'):
+            tag = 'remove'
+        elif line.startswith('@@'):
+            tag = 'header'
+        else:
+            tag = ''
+        
+        self.unified_diff.insert(tk.END, line + '\n', tag)
+
+    def open_file(self, side):
+        file_path = filedialog.askopenfilename()
+        if file_path:
+            with open(file_path, 'r') as f:
+                content = f.read()
+            getattr(self, f'{side}_text').delete('1.0', tk.END)
+            getattr(self, f'{side}_text').insert('1.0', content)
+            self.config['recent_files'].append(file_path)
+            self.save_config()
+
+    def export_diff(self):
+        file_path = filedialog.asksaveasfilename(defaultextension=".diff", filetypes=[("Diff Files", "*.diff"), ("All Files", "*.*")])
+        if file_path:
+            diff_content = self.unified_diff.get('1.0', tk.END)
+            with open(file_path, 'w') as f:
+                f.write(diff_content)
+            messagebox.showinfo("Export Successful", f"Diff exported to {file_path}")
+
+    def clear_panel(self, side):
+        getattr(self, f'{side}_text').delete('1.0', tk.END)
+
+    def toggle_theme(self):
+        if self.config['theme'] == 'light':
+            self.set_theme('dark')
+        else:
+            self.set_theme('light')
+        self.save_config()
+
+    def set_theme(self, theme):
+        self.config['theme'] = theme
+        bg = '#333333' if theme == 'dark' else '#ffffff'
+        fg = '#ffffff' if theme == 'dark' else '#000000'
+        
+        self.root.configure(background=bg)
+        for widget in [self.original_text, self.modified_text, self.unified_diff]:
+            widget.configure(bg=bg, fg=fg, insertbackground=fg)
+
+    def bind_shortcuts(self):
+        self.root.bind('<Control-o>', lambda e: self.open_file('original'))
+        self.root.bind('<Control-s>', lambda e: self.export_diff())
+        self.root.bind('<Control-d>', lambda e: self.toggle_theme())
+
+    def show_about(self):
+        messagebox.showinfo("About", "Ultimate Diff Checker Pro\nVersion 1.0\n\nA powerful tool for comparing text files.")
+
 if __name__ == "__main__":
     root = tk.Tk()
     app = UltimateDiffChecker(root)
